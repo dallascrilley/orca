@@ -217,6 +217,10 @@ type RemoteRuntimeSnapshotInfo = {
   // must write it AFTER the replay reset so the next live chunk completes it
   // instead of rendering literally (#7329).
   pendingEscapeTailAnsi?: string
+  // Why: whether the payload carries scrollback as well as the screen. Absent
+  // from older hosts, which is why the recovery path treats false as "do not
+  // erase scrollback" rather than "there is none".
+  scrollbackIncluded?: boolean
 }
 
 type RemoteRuntimeSnapshotRequest = {
@@ -904,15 +908,30 @@ class RemoteRuntimeTerminalMultiplexer {
             kittyKeyboardFlags: info?.kittyKeyboardFlags
           })
         } else if (target === 'recovery') {
-          // Why: a server-pushed recovery snapshot replaces terminal state
-          // mid-session; clear the screen and scrollback before applying it.
-          // An empty snapshot is still applied so stale dropped output does
-          // not linger on a terminal the model says is blank.
-          stream.callbacks.onSnapshot(`\x1b[2J\x1b[3J\x1b[H${data ?? ''}`, {
-            pendingEscapeTailAnsi: info?.pendingEscapeTailAnsi,
-            seq: info?.seq,
-            kittyKeyboardFlags: info?.kittyKeyboardFlags
-          })
+          // Why: a recovery repaint must never destroy more than it replaces.
+          // `\x1b[3J` erases xterm's scrollback, but desktop snapshots are
+          // serialized with `scrollbackRows: 0`, so the frame cannot put that
+          // history back — clear the screen alone unless the host says this
+          // payload carries scrollback. An absent flag means an older host,
+          // which never sends scrollback on this path either.
+          const clearAnsi = info?.scrollbackIncluded ? '\x1b[2J\x1b[3J\x1b[H' : '\x1b[2J\x1b[H'
+          // Why not an empty repaint: with no payload there is nothing to put
+          // on screen, so applying one only blanks a pane the host could not
+          // describe. A mid-escape tail still has to replay so the next live
+          // chunk completes it instead of rendering literally (#7329).
+          if (data) {
+            stream.callbacks.onSnapshot(`${clearAnsi}${data}`, {
+              pendingEscapeTailAnsi: info?.pendingEscapeTailAnsi,
+              seq: info?.seq,
+              kittyKeyboardFlags: info?.kittyKeyboardFlags
+            })
+          } else if (info?.pendingEscapeTailAnsi) {
+            stream.callbacks.onSnapshot('', {
+              pendingEscapeTailAnsi: info.pendingEscapeTailAnsi,
+              seq: info?.seq,
+              kittyKeyboardFlags: info?.kittyKeyboardFlags
+            })
+          }
         }
       } else if (matchesPendingRequest) {
         pendingRequest.resolve({
@@ -994,7 +1013,7 @@ class RemoteRuntimeTerminalMultiplexer {
 
   // Why: on a detected gap, discard the corrupt tail and pull a fresh
   // authoritative snapshot. The request carries no requestId so the server
-  // reply renders through the initial-snapshot path (full reset), self-healing
+  // reply renders through the recovery path (screen reset), self-healing
   // without surfacing an error to the user.
   private requestResyncSnapshot(stream: RemoteRuntimeMultiplexedTerminalState): void {
     if (stream.resyncInFlight) {
@@ -1546,6 +1565,7 @@ function decodeSnapshotInfo(
     requestId?: unknown
     truncated?: unknown
     unavailable?: unknown
+    scrollbackIncluded?: unknown
     pendingEscapeTailAnsi?: unknown
     kittyKeyboardFlags?: unknown
   }>(payload)
@@ -1562,6 +1582,7 @@ function decodeSnapshotInfo(
     requestId: typeof raw.requestId === 'number' ? raw.requestId : undefined,
     truncated: raw.truncated === true,
     unavailable: parseTerminalSnapshotUnavailableReason(raw.unavailable),
+    scrollbackIncluded: raw.scrollbackIncluded === true,
     pendingEscapeTailAnsi:
       typeof raw.pendingEscapeTailAnsi === 'string' ? raw.pendingEscapeTailAnsi : undefined
   }

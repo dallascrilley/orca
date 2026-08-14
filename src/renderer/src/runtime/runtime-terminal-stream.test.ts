@@ -586,16 +586,37 @@ describe('remote runtime terminal multiplex ACK gate', () => {
       },
       'recovered state'
     )
-    // Why: an unsolicited recovery snapshot replaces terminal state, so it
-    // clears screen and scrollback first and must not replay the subscribe
-    // lifecycle.
-    expect(onSnapshot).toHaveBeenCalledWith(`\x1b[2J\x1b[3J\x1b[H${'recovered state'}`, {
+    // Why only the screen: an unsolicited recovery snapshot replaces terminal
+    // state without replaying the subscribe lifecycle, but this frame carries
+    // no scrollback, so erasing the client's history would destroy output the
+    // frame cannot put back.
+    expect(onSnapshot).toHaveBeenCalledWith(`\x1b[2J\x1b[H${'recovered state'}`, {
       pendingEscapeTailAnsi: undefined
     })
     expect(onSubscribed).toHaveBeenCalledTimes(1)
 
-    // Why: an empty recovery snapshot means the model terminal is blank, so
-    // the client must still clear stale dropped output.
+    // Why scrollback may be erased here: the host states the payload carries
+    // it, so the frame replaces the history it removes.
+    injectSnapshot(
+      {
+        kind: 'scrollback',
+        cols: 120,
+        rows: 40,
+        reason: 'ack-pending-overflow',
+        truncated: false,
+        scrollbackIncluded: true
+      },
+      'restored with history'
+    )
+    expect(onSnapshot).toHaveBeenCalledWith(`\x1b[2J\x1b[3J\x1b[H${'restored with history'}`, {
+      pendingEscapeTailAnsi: undefined
+    })
+
+    // Why nothing at all: this replaced the previous rule, which read an empty
+    // payload as an authoritative blank and cleared on it. An empty payload is
+    // the host failing to describe the pane, not proof the pane is empty, and
+    // applying it only blanks a terminal the user can still read.
+    const snapshotCallsBeforeEmpty = onSnapshot.mock.calls.length
     injectSnapshot(
       {
         kind: 'scrollback',
@@ -606,9 +627,7 @@ describe('remote runtime terminal multiplex ACK gate', () => {
       },
       ''
     )
-    expect(onSnapshot).toHaveBeenCalledWith('\x1b[2J\x1b[3J\x1b[H', {
-      pendingEscapeTailAnsi: undefined
-    })
+    expect(onSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeEmpty)
     expect(onSubscribed).toHaveBeenCalledTimes(1)
 
     stream.close()
