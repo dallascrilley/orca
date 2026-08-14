@@ -595,23 +595,6 @@ describe('remote runtime terminal multiplex ACK gate', () => {
     })
     expect(onSubscribed).toHaveBeenCalledTimes(1)
 
-    // Why scrollback may be erased here: the host states the payload carries
-    // it, so the frame replaces the history it removes.
-    injectSnapshot(
-      {
-        kind: 'scrollback',
-        cols: 120,
-        rows: 40,
-        reason: 'ack-pending-overflow',
-        truncated: false,
-        scrollbackIncluded: true
-      },
-      'restored with history'
-    )
-    expect(onSnapshot).toHaveBeenCalledWith(`\x1b[2J\x1b[3J\x1b[H${'restored with history'}`, {
-      pendingEscapeTailAnsi: undefined
-    })
-
     // Why nothing at all: this replaced the previous rule, which read an empty
     // payload as an authoritative blank and cleared on it. An empty payload is
     // the host failing to describe the pane, not proof the pane is empty, and

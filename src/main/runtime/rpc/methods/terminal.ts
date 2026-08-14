@@ -101,17 +101,6 @@ type SnapshotFrameOptions = {
   pendingEscapeTailAnsi?: string
   /** Effective kitty flags proven at this frame's own `seq`. */
   kittyKeyboardFlags?: number
-  /**
-   * Whether `data` carries scrollback as well as the visible screen. Desktop
-   * snapshots are serialized with `scrollbackRows: 0`, so a client that erases
-   * its own scrollback to apply one destroys history the frame cannot replace.
-   */
-  scrollbackIncluded?: boolean
-}
-
-/** Whether a serialized snapshot's payload carries scrollback, not just the visible screen. */
-function snapshotCarriesScrollback(snapshot: SerializedSnapshot): boolean {
-  return Boolean(snapshot && (snapshot.scrollbackRows > 0 || snapshot.scrollbackAnsi))
 }
 
 type SerializedSnapshot = {
@@ -671,9 +660,6 @@ function sendSnapshotFrames(
         ...(typeof options.seq === 'number' && options.kittyKeyboardFlags !== undefined
           ? { kittyKeyboardFlags: options.kittyKeyboardFlags }
           : {}),
-        // Why additive on the same rule: absence means "unknown", and a client
-        // that cannot read it keeps its existing behavior.
-        ...(options.scrollbackIncluded === true ? { scrollbackIncluded: true } : {}),
         truncated: options.truncated === true,
         truncatedByByteBudget: options.truncatedByByteBudget === true
       })
@@ -1868,7 +1854,6 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
               source: serialized.source,
               kittyKeyboardFlags: serialized.kittyKeyboardFlags,
               truncatedByByteBudget: serialized.truncatedByByteBudget,
-              scrollbackIncluded: snapshotCarriesScrollback(serialized),
               data: serialized.data
             }
           )
@@ -2362,7 +2347,6 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
             truncatedByByteBudget: serialized?.truncatedByByteBudget,
             // Why: no serializer answered, which is not proof the pane is empty — say so instead of passing off '' as the buffer.
             unavailable: serialized ? undefined : 'no-serializable-buffer',
-            scrollbackIncluded: snapshotCarriesScrollback(serialized),
             data: serialized?.data ?? ''
           })
         } catch (error) {

@@ -217,10 +217,6 @@ type RemoteRuntimeSnapshotInfo = {
   // must write it AFTER the replay reset so the next live chunk completes it
   // instead of rendering literally (#7329).
   pendingEscapeTailAnsi?: string
-  // Why: whether the payload carries scrollback as well as the screen. Absent
-  // from older hosts, which is why the recovery path treats false as "do not
-  // erase scrollback" rather than "there is none".
-  scrollbackIncluded?: boolean
 }
 
 type RemoteRuntimeSnapshotRequest = {
@@ -908,19 +904,19 @@ class RemoteRuntimeTerminalMultiplexer {
             kittyKeyboardFlags: info?.kittyKeyboardFlags
           })
         } else if (target === 'recovery') {
-          // Why: a recovery repaint must never destroy more than it replaces.
-          // `\x1b[3J` erases xterm's scrollback, but desktop snapshots are
-          // serialized with `scrollbackRows: 0`, so the frame cannot put that
-          // history back — clear the screen alone unless the host says this
-          // payload carries scrollback. An absent flag means an older host,
-          // which never sends scrollback on this path either.
-          const clearAnsi = info?.scrollbackIncluded ? '\x1b[2J\x1b[3J\x1b[H' : '\x1b[2J\x1b[H'
+          // Why the screen only, never `\x1b[3J`: that erases xterm's scrollback,
+          // and every payload reaching this branch is screen-only by
+          // construction — the ack-recovery emit serializes with
+          // `scrollbackRows: 0`, and the untagged resync request carries no
+          // scrollback either. Erasing history the frame cannot put back is
+          // silent data loss. A payload that DOES carry scrollback arrives
+          // tagged, and the request branch above never clears.
           // Why not an empty repaint: with no payload there is nothing to put
           // on screen, so applying one only blanks a pane the host could not
           // describe. A mid-escape tail still has to replay so the next live
           // chunk completes it instead of rendering literally (#7329).
           if (data) {
-            stream.callbacks.onSnapshot(`${clearAnsi}${data}`, {
+            stream.callbacks.onSnapshot(`\x1b[2J\x1b[H${data}`, {
               pendingEscapeTailAnsi: info?.pendingEscapeTailAnsi,
               seq: info?.seq,
               kittyKeyboardFlags: info?.kittyKeyboardFlags
@@ -1565,7 +1561,6 @@ function decodeSnapshotInfo(
     requestId?: unknown
     truncated?: unknown
     unavailable?: unknown
-    scrollbackIncluded?: unknown
     pendingEscapeTailAnsi?: unknown
     kittyKeyboardFlags?: unknown
   }>(payload)
@@ -1582,7 +1577,6 @@ function decodeSnapshotInfo(
     requestId: typeof raw.requestId === 'number' ? raw.requestId : undefined,
     truncated: raw.truncated === true,
     unavailable: parseTerminalSnapshotUnavailableReason(raw.unavailable),
-    scrollbackIncluded: raw.scrollbackIncluded === true,
     pendingEscapeTailAnsi:
       typeof raw.pendingEscapeTailAnsi === 'string' ? raw.pendingEscapeTailAnsi : undefined
   }

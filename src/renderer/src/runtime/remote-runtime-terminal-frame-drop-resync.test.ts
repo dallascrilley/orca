@@ -16,9 +16,7 @@ import { replaceRuntimeEnvironmentRevisions } from './runtime-environment-revisi
 
 // Why screen-only: a resync reply is serialized with `scrollbackRows: 0`, so it
 // carries the visible screen and nothing else. Erasing the client's scrollback
-// (`\x1b[3J`) to apply it would destroy history the frame cannot put back. The
-// host sets `scrollbackIncluded` when a payload does carry scrollback, and only
-// then is the full clear correct.
+// (`\x1b[3J`) to apply it would destroy history the frame cannot put back.
 const RECOVERY_SCREEN_CLEAR = '\x1b[2J\x1b[H'
 
 // Why: reproduces the silent frame-drop corruption. The server multiplex path
