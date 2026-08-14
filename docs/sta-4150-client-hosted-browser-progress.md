@@ -260,6 +260,32 @@ Deterministic evidence:
   fixes preserve the asynchronous starter contract, test permanent fail-closed tombstones, and
   report deferred cleanup failures without releasing the safety fence.
 
+## Published stage: authenticated page reconciliation semantics (#14617)
+
+Branch `sta-4150-browser-client-page-reconciliation` is stacked on #14613 as draft PR
+[#14617](https://github.com/stablyai/orca/pull/14617). The stage adds no exchanged field,
+capability, or production caller.
+
+Current evidence:
+
+- Baseline: the focused suite failed because the reconciliation planner did not exist.
+- The planner compares bounded runtime intent with bounded client inventory and emits immutable
+  exact-retain, explicit old-epoch reclaim, orphan-close, missing-restore, and
+  close-before-restore actions.
+- Profile, execution-host, authority, generation, and outcome-unknown mismatches are never
+  adopted. Old-epoch reclaim requires the exact persisted previous authority, a real epoch
+  transition, and the same browser-host client identity; numeric counters may restart under the
+  new epoch.
+- Duplicate or over-capacity inventories fail atomically rather than returning a partial plan.
+- Focused state-machine gate: 1 file / 28 tests passed.
+- The placement/lease package passed 5 files / 58 tests; full node/CLI/web typecheck, lint/audits,
+  85-gate manifest, changed-code quality, formatting, and diff checks passed.
+- Two fresh read-only reviews found no remaining authority, ordering, boundedness, immutability,
+  portability, or mixed-version blocker. Review caught and fixed same-epoch reclaim, while a
+  separate test preserves valid counter restart under a new epoch.
+- This stage pins semantics only. Authenticated inventory transport, runtime integration,
+  executor inventory, pending-close resolution, and real reconnect/restart journeys remain.
+
 ## Acceptance matrix
 
 | Requirement                                                        | State                     | Evidence or blocker                                                                                               |
@@ -285,10 +311,10 @@ Deterministic evidence:
 
 ## Remaining implementation order
 
-1. Monitor #14596 and #14613 CI and fix any actionable failure without merging or marking them
-   ready.
-2. Add authenticated inventory/reclaim/restore/close reconciliation before recovering ambiguous
-   slots or routes.
+1. Monitor #14596, #14613, and #14617 CI and fix any actionable failure without merging or
+   marking them ready.
+2. Finish authenticated inventory transport and compose the pinned reclaim/restore/close plan
+   before recovering ambiguous slots or routes.
 3. Add optional placement to logical session-tab publication and renderer state. Follow
    `docs/reference/remote-wire-compatibility.md`; old callers and clients remain server-hosted.
 4. Route create and every existing browser command by explicit placement. Never silently fall
@@ -366,6 +392,8 @@ topology, versions, and explicit gaps at every later checkpoint.
   STA-4150 and posted one concise checkpoint. The ticket remains In Progress.
 - Pushed the environment-scoped composition and opened draft PR #14613 on #14596; attached it to
   STA-4150 and posted one concise checkpoint. The ticket remains In Progress.
+- Pushed the reconciliation semantics and opened draft PR #14617 on #14613. It adds no wire field
+  or production caller.
 - Rebased all 25 branches onto `origin/main@9bb8836bb6`, confirmed all 26 patches identical before
   the ledger-only amend, and pushed them with lease checks.
 - No PR was merged or marked ready.
