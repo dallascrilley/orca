@@ -86,6 +86,86 @@ describe('orchestration RPC methods', () => {
       expect(current.run?.id).toBe(created.run.id)
     })
 
+    it('binds an external Run to the authenticated client fingerprint and fences it on terminal rebind', async () => {
+      setup(false)
+      const clientFingerprint = 'paired-runtime-fingerprint'
+      ctx = {
+        ...ctx,
+        externalCoordinatorAuthority: {
+          kind: 'create',
+          clientFingerprint,
+          mutationCallerFingerprint: 'external-create'
+        }
+      }
+      const created = (await call('orchestration.runCreate', {
+        objective: 'External coordinator',
+        external: true
+      })) as { run: { id: string; consumer_generation: number } }
+      const run = db.getRun(created.run.id)!
+      const generation = run.consumer_generation
+      ctx = {
+        ...ctx,
+        externalCoordinatorAuthority: {
+          kind: 'bound',
+          clientFingerprint,
+          run,
+          mutationCallerFingerprint: 'external-bound',
+          revalidate: () => {
+            const current = db.getRun(run.id)
+            if (
+              !current ||
+              current.consumer_generation !== generation ||
+              current.coordinator_client_fingerprint !== clientFingerprint
+            ) {
+              throw new Error('consumer_fenced')
+            }
+            return current
+          }
+        }
+      }
+      const current = (await call('orchestration.runCurrent', {})) as {
+        run: { id: string } | null
+      }
+      vi.spyOn(runtime, 'getTerminalPaneKey').mockReturnValue(
+        'tab_coord:11111111-1111-4111-8111-111111111111'
+      )
+      const rebound = (await call('orchestration.runUse', {
+        id: run.id,
+        from: 'term_coord'
+      })) as { run: { consumer_generation: number } }
+
+      expect(current.run?.id).toBe(run.id)
+      expect(run.coordinator_client_fingerprint).toBe(clientFingerprint)
+      expect(rebound.run.consumer_generation).toBe(generation + 1)
+      expect(db.getRun(run.id)?.coordinator_client_fingerprint).toBeNull()
+      await expect(call('orchestration.runCurrent', {})).rejects.toThrow('consumer_fenced')
+    })
+
+    it('cancels the displaced external Run waiter when creating a replacement', async () => {
+      setup(false)
+      const clientFingerprint = 'paired-runtime-fingerprint'
+      ctx = {
+        ...ctx,
+        externalCoordinatorAuthority: {
+          kind: 'create',
+          clientFingerprint,
+          mutationCallerFingerprint: 'external-create'
+        }
+      }
+      const first = (await call('orchestration.runCreate', {
+        objective: 'First external Run',
+        external: true
+      })) as { run: { id: string } }
+      const cancelMessageWaiters = vi.spyOn(runtime, 'cancelMessageWaiters')
+
+      await call('orchestration.runCreate', {
+        objective: 'Replacement external Run',
+        external: true
+      })
+
+      expect(cancelMessageWaiters).toHaveBeenCalledWith(`run:${first.run.id}`)
+    })
+
     it('requires runtime-observed stable pane identity for binding', async () => {
       setup(false)
       vi.spyOn(runtime, 'getTerminalPaneKey').mockReturnValue(null)

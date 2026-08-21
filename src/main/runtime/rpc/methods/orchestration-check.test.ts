@@ -77,6 +77,61 @@ describe('orchestration RPC methods', () => {
       expect(result.count).toBe(2)
     })
 
+    it('replays and acknowledges the authenticated external Run mailbox without a terminal', async () => {
+      setup(false)
+      const clientFingerprint = 'paired-runtime-fingerprint'
+      const run = db.createExternalRun({
+        objective: 'External check',
+        clientFingerprint
+      })
+      const generation = run.consumer_generation
+      ctx = {
+        ...ctx,
+        externalCoordinatorAuthority: {
+          kind: 'bound',
+          clientFingerprint,
+          run,
+          mutationCallerFingerprint: 'external-check',
+          revalidate: () => {
+            const current = db.getRun(run.id)
+            if (
+              !current ||
+              current.consumer_generation !== generation ||
+              current.coordinator_client_fingerprint !== clientFingerprint
+            ) {
+              throw new Error('consumer_fenced')
+            }
+            return current
+          }
+        }
+      }
+      db.insertMessage({
+        from: 'term_worker',
+        to: `run:${run.id}`,
+        subject: 'External decision',
+        runId: run.id
+      })
+
+      const first = (await call('orchestration.check', { run: run.id })) as {
+        deliveryId: string
+        count: number
+        replayed: boolean
+      }
+      const replay = (await call('orchestration.check', { run: run.id })) as {
+        deliveryId: string
+        replayed: boolean
+      }
+      const acknowledged = (await call('orchestration.check', {
+        run: run.id,
+        ack: first.deliveryId,
+        peek: true
+      })) as { acknowledged: string; count: number }
+
+      expect(first).toMatchObject({ count: 1, replayed: false })
+      expect(replay).toMatchObject({ deliveryId: first.deliveryId, replayed: true })
+      expect(acknowledged).toMatchObject({ acknowledged: first.deliveryId, count: 0 })
+    })
+
     it('never mixes two bound Run mailboxes', async () => {
       setup(false)
       const paneA = 'tab_a:11111111-1111-4111-8111-111111111111'

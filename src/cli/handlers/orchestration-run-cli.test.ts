@@ -35,6 +35,62 @@ describe('lightweight Run CLI handlers', () => {
     })
   })
 
+  it('creates an external Run only after saved-environment capability preflight', async () => {
+    delete process.env.ORCA_TERMINAL_HANDLE
+    const requireExternalCoordinatorCapability = vi.fn().mockResolvedValue(undefined)
+    callMock.mockResolvedValue({
+      result: { run: { id: 'run_external', objective: 'External work', consumer_generation: 1 } }
+    })
+
+    await ORCHESTRATION_HANDLERS['orchestration run-create']({
+      flags: new Map<string, string | boolean>([
+        ['objective', 'External work'],
+        ['external', true],
+        ['json', true]
+      ]),
+      client: {
+        call: callMock,
+        isRemote: true,
+        requireExternalCoordinatorCapability
+      },
+      cwd: '/tmp/repo',
+      json: true
+    } as never)
+
+    expect(requireExternalCoordinatorCapability).toHaveBeenCalledOnce()
+    expect(callMock).toHaveBeenCalledWith('orchestration.runCreate', {
+      objective: 'External work',
+      external: true
+    })
+    expect(getTerminalHandleMock).not.toHaveBeenCalled()
+  })
+
+  it('preserves active-terminal resolution for ad-hoc pairing codes', async () => {
+    delete process.env.ORCA_TERMINAL_HANDLE
+    getTerminalHandleMock.mockResolvedValue('term_remote')
+    const requireExternalCoordinatorCapability = vi.fn()
+    callMock.mockResolvedValue({
+      result: { run: { id: 'run_remote', objective: 'Remote terminal' } }
+    })
+
+    await ORCHESTRATION_HANDLERS['orchestration run-current']({
+      flags: new Map(),
+      client: {
+        call: callMock,
+        isRemote: true,
+        hasSavedEnvironment: false,
+        requireExternalCoordinatorCapability
+      },
+      cwd: '/tmp/repo',
+      json: true
+    } as never)
+
+    expect(requireExternalCoordinatorCapability).not.toHaveBeenCalled()
+    expect(callMock).toHaveBeenCalledWith('orchestration.runCurrent', {
+      from: 'term_remote'
+    })
+  })
+
   it('reuses the same explicit binding path for run-use and run-current', async () => {
     callMock
       .mockResolvedValueOnce({ result: { run: { id: 'run_1', objective: 'Work' } } })

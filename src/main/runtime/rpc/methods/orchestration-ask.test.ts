@@ -30,7 +30,7 @@ describe('orchestration RPC methods', () => {
       setup()
       const original = db.insertMessage({
         from: 'a',
-        to: 'b',
+        to: 'term_coord',
         subject: 'question',
         runId: activeRunId
       })
@@ -38,7 +38,7 @@ describe('orchestration RPC methods', () => {
       const result = (await call('orchestration.reply', {
         id: original.id,
         body: 'answer',
-        from: 'b'
+        from: 'term_coord'
       })) as {
         message: { to_handle: string; subject: string; thread_id: string; run_id: string }
       }
@@ -97,6 +97,104 @@ describe('orchestration RPC methods', () => {
           from: 'term_coord'
         })
       ).rejects.toMatchObject({ code: 'answer_conflict' })
+    })
+
+    it('answers a Run question as the authenticated external coordinator', async () => {
+      setup(false)
+      const clientFingerprint = 'paired-runtime-fingerprint'
+      const run = db.createExternalRun({
+        objective: 'External reply',
+        clientFingerprint
+      })
+      const task = db.createTask({ spec: 'external question', runId: run.id })
+      const dispatch = db.createDispatchContext(task.id, 'term_worker')
+      const created = db.createQuestion({
+        runId: run.id,
+        dispatchId: dispatch.id,
+        askerHandle: 'term_worker',
+        question: 'Proceed?'
+      })
+      const generation = run.consumer_generation
+      ctx = {
+        ...ctx,
+        externalCoordinatorAuthority: {
+          kind: 'bound',
+          clientFingerprint,
+          run,
+          mutationCallerFingerprint: 'external-reply',
+          revalidate: () => {
+            const current = db.getRun(run.id)
+            if (
+              !current ||
+              current.consumer_generation !== generation ||
+              current.coordinator_client_fingerprint !== clientFingerprint
+            ) {
+              throw new Error('consumer_fenced')
+            }
+            return current
+          }
+        }
+      }
+
+      const result = (await call('orchestration.reply', {
+        id: created.message.id,
+        body: 'Yes',
+        run: run.id
+      })) as { message: { to_handle: string }; duplicate: boolean }
+
+      expect(result).toMatchObject({
+        message: { to_handle: `dispatch:${dispatch.id}` },
+        duplicate: false
+      })
+    })
+
+    it('rejects an external reply to a non-question message from another Run', async () => {
+      setup(false)
+      const clientFingerprint = 'paired-runtime-fingerprint'
+      const ownRun = db.createExternalRun({
+        objective: 'Own Run',
+        clientFingerprint
+      })
+      const foreignRun = db.createExternalRun({
+        objective: 'Foreign Run',
+        clientFingerprint: 'foreign-fingerprint'
+      })
+      const foreign = db.insertMessage({
+        from: 'term_foreign',
+        to: `run:${foreignRun.id}`,
+        subject: 'Foreign status',
+        runId: foreignRun.id
+      })
+      const generation = ownRun.consumer_generation
+      ctx = {
+        ...ctx,
+        externalCoordinatorAuthority: {
+          kind: 'bound',
+          clientFingerprint,
+          run: ownRun,
+          mutationCallerFingerprint: 'external-reply',
+          revalidate: () => {
+            const current = db.getRun(ownRun.id)
+            if (
+              !current ||
+              current.consumer_generation !== generation ||
+              current.coordinator_client_fingerprint !== clientFingerprint
+            ) {
+              throw new Error('consumer_fenced')
+            }
+            return current
+          }
+        }
+      }
+
+      await expect(
+        call('orchestration.reply', {
+          id: foreign.id,
+          body: 'cross-run',
+          run: ownRun.id
+        })
+      ).rejects.toMatchObject({ code: 'consumer_fenced' })
+      expect(db.getMessageById(foreign.id)?.read).toBe(0)
     })
   })
 

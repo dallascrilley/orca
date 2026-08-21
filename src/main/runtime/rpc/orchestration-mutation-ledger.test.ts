@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ORCHESTRATION_CONTRACT_VERSION } from '../../../shared/protocol-version'
+import {
+  ORCHESTRATION_CONTRACT_VERSION,
+  ORCHESTRATION_EXTERNAL_COORDINATOR_RUNTIME_CAPABILITY
+} from '../../../shared/protocol-version'
 import { OrcaRuntimeService } from '../orca-runtime'
 import { OrchestrationDb } from '../orchestration/db'
 import { defineMethod, type RpcRequest } from './core'
@@ -134,6 +137,199 @@ describe('durable orchestration mutation ledger', () => {
     })
     expect(effect).toHaveBeenCalledTimes(2)
     expect(db.getInbox(10)).toHaveLength(2)
+    db.close()
+  })
+
+  it('rejects ineligible external coordinators before creating a mutation receipt', async () => {
+    const db = new OrchestrationDb(':memory:')
+    const runtime = new OrcaRuntimeService()
+    runtime.setOrchestrationDb(db)
+    const dispatcher = new RpcDispatcher({ runtime, methods: ORCHESTRATION_METHODS })
+    const beginMutationReceipt = vi.spyOn(db, 'beginMutationReceipt')
+    const replies: string[] = []
+    const externalCreate: RpcRequest = {
+      id: 'rpc_external',
+      authToken: '',
+      method: 'orchestration.runCreate',
+      params: { objective: 'External', external: true },
+      orchestrationContractVersion: ORCHESTRATION_CONTRACT_VERSION,
+      orchestrationRequestId: 'mutation_external'
+    }
+
+    await dispatcher.dispatchStreaming(externalCreate, (reply) => replies.push(reply), {
+      authenticatedCallerFingerprint: 'mobile-fingerprint',
+      clientKind: 'mobile',
+      clientCapabilities: [ORCHESTRATION_EXTERNAL_COORDINATOR_RUNTIME_CAPABILITY]
+    })
+    await dispatcher.dispatchStreaming(
+      {
+        id: 'rpc_terminal_downgrade',
+        authToken: '',
+        method: 'orchestration.runUse',
+        params: { id: 'run_target', from: 'term_attacker' },
+        orchestrationContractVersion: ORCHESTRATION_CONTRACT_VERSION,
+        orchestrationRequestId: 'mutation_terminal_downgrade'
+      },
+      (reply) => replies.push(reply),
+      {
+        authenticatedCallerFingerprint: 'runtime-fingerprint',
+        clientKind: 'runtime',
+        clientCapabilities: [ORCHESTRATION_EXTERNAL_COORDINATOR_RUNTIME_CAPABILITY]
+      }
+    )
+    await dispatcher.dispatchStreaming(
+      {
+        id: 'rpc_send_downgrade',
+        authToken: '',
+        method: 'orchestration.send',
+        params: {
+          from: 'term_attacker',
+          to: 'run:run_foreign',
+          subject: 'foreign mutation'
+        },
+        orchestrationContractVersion: ORCHESTRATION_CONTRACT_VERSION,
+        orchestrationRequestId: 'mutation_send_downgrade'
+      },
+      (reply) => replies.push(reply),
+      {
+        authenticatedCallerFingerprint: 'runtime-fingerprint',
+        clientKind: 'runtime',
+        clientCapabilities: [ORCHESTRATION_EXTERNAL_COORDINATOR_RUNTIME_CAPABILITY]
+      }
+    )
+
+    expect(JSON.parse(replies[0] ?? '{}')).toMatchObject({
+      ok: false,
+      error: { code: 'external_coordinator_unsupported' }
+    })
+    expect(JSON.parse(replies[1] ?? '{}')).toMatchObject({
+      ok: false,
+      error: { code: 'consumer_fenced' }
+    })
+    expect(JSON.parse(replies[2] ?? '{}')).toMatchObject({
+      ok: false,
+      error: { code: 'consumer_fenced' }
+    })
+    expect(beginMutationReceipt).not.toHaveBeenCalled()
+    db.close()
+  })
+
+  it('accepts an exact attested remote terminal identity before the mutation ledger', async () => {
+    const db = new OrchestrationDb(':memory:')
+    const runtime = new OrcaRuntimeService()
+    runtime.setOrchestrationDb(db)
+    vi.spyOn(runtime, 'verifyOrchestrationCompatibilityCaller').mockReturnValue({
+      terminalHandle: 'term_attested',
+      paneKey: 'tab_attested:leaf_attested'
+    } as never)
+    vi.spyOn(runtime, 'getTerminalPaneKey').mockReturnValue('tab_attested:leaf_attested')
+    const dispatcher = new RpcDispatcher({ runtime, methods: ORCHESTRATION_METHODS })
+    const beginMutationReceipt = vi.spyOn(db, 'beginMutationReceipt')
+    const replies: string[] = []
+
+    await dispatcher.dispatchStreaming(
+      {
+        id: 'rpc_attested_terminal',
+        authToken: '',
+        method: 'orchestration.runUse',
+        params: { id: 'run_missing', from: 'term_attested' },
+        orchestrationContractVersion: ORCHESTRATION_CONTRACT_VERSION,
+        orchestrationRequestId: 'mutation_attested_terminal',
+        orchestrationCompatibilityEvidence: {} as never
+      },
+      (reply) => replies.push(reply),
+      {
+        authenticatedCallerFingerprint: 'runtime-fingerprint',
+        clientKind: 'runtime',
+        clientCapabilities: [ORCHESTRATION_EXTERNAL_COORDINATOR_RUNTIME_CAPABILITY]
+      }
+    )
+
+    expect(JSON.parse(replies[0] ?? '{}')).toMatchObject({
+      ok: false,
+      error: { code: 'run_not_found' }
+    })
+    expect(beginMutationReceipt).toHaveBeenCalledOnce()
+    db.close()
+  })
+
+  it('returns null when an authenticated external coordinator has no Run', async () => {
+    const db = new OrchestrationDb(':memory:')
+    const runtime = new OrcaRuntimeService()
+    runtime.setOrchestrationDb(db)
+    const dispatcher = new RpcDispatcher({ runtime, methods: ORCHESTRATION_METHODS })
+    const replies: string[] = []
+
+    await dispatcher.dispatchStreaming(
+      {
+        id: 'rpc_unbound_current',
+        authToken: '',
+        method: 'orchestration.runCurrent',
+        params: {},
+        orchestrationContractVersion: ORCHESTRATION_CONTRACT_VERSION
+      },
+      (reply) => replies.push(reply),
+      {
+        authenticatedCallerFingerprint: 'unbound-saved-environment',
+        clientKind: 'runtime',
+        clientCapabilities: [ORCHESTRATION_EXTERNAL_COORDINATOR_RUNTIME_CAPABILITY]
+      }
+    )
+
+    expect(JSON.parse(replies[0] ?? '{}')).toMatchObject({
+      ok: true,
+      result: { run: null }
+    })
+    db.close()
+  })
+
+  it('creates and resumes an external Run for the authenticated runtime fingerprint', async () => {
+    const db = new OrchestrationDb(':memory:')
+    const runtime = new OrcaRuntimeService()
+    runtime.setOrchestrationDb(db)
+    const dispatcher = new RpcDispatcher({ runtime, methods: ORCHESTRATION_METHODS })
+    const replies: string[] = []
+    const options = {
+      authenticatedCallerFingerprint: 'saved-environment-fingerprint',
+      clientKind: 'runtime' as const,
+      clientCapabilities: [ORCHESTRATION_EXTERNAL_COORDINATOR_RUNTIME_CAPABILITY]
+    }
+
+    await dispatcher.dispatchStreaming(
+      {
+        id: 'rpc_create',
+        authToken: '',
+        method: 'orchestration.runCreate',
+        params: { objective: 'External', external: true },
+        orchestrationContractVersion: ORCHESTRATION_CONTRACT_VERSION,
+        orchestrationRequestId: 'mutation_create'
+      },
+      (reply) => replies.push(reply),
+      options
+    )
+    await dispatcher.dispatchStreaming(
+      {
+        id: 'rpc_current',
+        authToken: '',
+        method: 'orchestration.runCurrent',
+        params: {},
+        orchestrationContractVersion: ORCHESTRATION_CONTRACT_VERSION
+      },
+      (reply) => replies.push(reply),
+      options
+    )
+
+    const created = JSON.parse(replies[0] ?? '{}') as {
+      result: { run: { id: string } }
+    }
+    expect(created.result.run.id).toMatch(/^run_/)
+    expect(JSON.parse(replies[1] ?? '{}')).toMatchObject({
+      ok: true,
+      result: { run: { id: created.result.run.id } }
+    })
+    expect(db.getCurrentRunForExternalCoordinator(options.authenticatedCallerFingerprint)?.id).toBe(
+      created.result.run.id
+    )
     db.close()
   })
 

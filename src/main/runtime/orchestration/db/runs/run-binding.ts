@@ -137,6 +137,7 @@ export function bindRun(
         .prepare(
           `UPDATE runs
            SET coordinator_handle = ?, coordinator_pane_key = ?,
+               coordinator_client_fingerprint = NULL,
                consumer_generation = consumer_generation + 1,
                updated_at = datetime('now')
            WHERE id = ?`

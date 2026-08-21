@@ -9,10 +9,20 @@ import type {
 import { OrchestrationError } from '../../orchestration/orchestration-error'
 import { assertCallerHandleMatchesEvidence } from './orchestration-run-scope'
 
-const RunCreateParams = z.object({
-  objective: requiredString('Missing --objective'),
-  from: requiredString('Missing coordinator terminal')
-})
+const RunCreateParams = z
+  .object({
+    objective: requiredString('Missing --objective'),
+    from: OptionalString,
+    external: OptionalBoolean
+  })
+  .superRefine((params, ctx) => {
+    if ((params.external === true) === Boolean(params.from)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Choose exactly one coordinator identity: --from or --external.'
+      })
+    }
+  })
 
 const RunUseParams = z.object({
   id: requiredString('Missing --id'),
@@ -20,7 +30,7 @@ const RunUseParams = z.object({
   takeoverLegacy: OptionalBoolean
 })
 
-const RunCurrentParams = z.object({ from: requiredString('Missing coordinator terminal') })
+const RunCurrentParams = z.object({ from: OptionalString })
 const RunListParams = z.object({
   limit: z.number().int().min(1).max(ORCHESTRATION_RUN_PAGE_LIMIT).optional(),
   cursor: z.string().min(1).optional()
@@ -49,10 +59,33 @@ export const ORCHESTRATION_RUN_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'orchestration.runCreate',
     params: RunCreateParams,
-    handler: (params, { orchestrationCompatibilityEvidence, runtime }) => {
+    handler: (
+      params,
+      { externalCoordinatorAuthority, orchestrationCompatibilityEvidence, runtime }
+    ) => {
+      const db = runtime.getOrchestrationDb()
+      if (externalCoordinatorAuthority?.kind === 'create') {
+        const priorRun = db.getCurrentRunForExternalCoordinator(
+          externalCoordinatorAuthority.clientFingerprint
+        )
+        const run = db.createExternalRun({
+          objective: params.objective,
+          clientFingerprint: externalCoordinatorAuthority.clientFingerprint
+        })
+        if (priorRun) {
+          runtime.cancelMessageWaiters(`run:${priorRun.id}`)
+        }
+        return { run, binding: { consumerGeneration: run.consumer_generation } }
+      }
+      if (!params.from) {
+        throw new OrchestrationError(
+          'external_coordinator_unsupported',
+          'External coordinator authority was not established.',
+          { effectsApplied: false }
+        )
+      }
       assertCallerHandleMatchesEvidence(runtime, params.from, orchestrationCompatibilityEvidence)
       const paneKey = requireCallerPane(runtime, params.from)
-      const db = runtime.getOrchestrationDb()
       const priorRun = db.getCurrentRunForPane(paneKey)
       const run = db.createRun({
         objective: params.objective,
@@ -116,7 +149,23 @@ export const ORCHESTRATION_RUN_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'orchestration.runCurrent',
     params: RunCurrentParams,
-    handler: (params, { orchestrationCompatibilityEvidence, runtime }) => {
+    handler: (
+      params,
+      { externalCoordinatorAuthority, orchestrationCompatibilityEvidence, runtime }
+    ) => {
+      if (externalCoordinatorAuthority?.kind === 'bound') {
+        return { run: externalCoordinatorAuthority.revalidate() }
+      }
+      if (externalCoordinatorAuthority?.kind === 'unbound') {
+        return { run: null }
+      }
+      if (!params.from) {
+        throw new OrchestrationError(
+          'external_coordinator_unsupported',
+          'External coordinator authority was not established.',
+          { effectsApplied: false }
+        )
+      }
       assertCallerHandleMatchesEvidence(runtime, params.from, orchestrationCompatibilityEvidence)
       const paneKey = requireCallerPane(runtime, params.from)
       return { run: runtime.getOrchestrationDb().getCurrentRunForPane(paneKey) ?? null }

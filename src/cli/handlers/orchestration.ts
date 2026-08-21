@@ -488,12 +488,22 @@ function safeJson(value: unknown): string {
 
 export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
   'orchestration run-create': async ({ flags, client, cwd, json }) => {
-    const from = await resolveCoordinatorTerminalHandle(flags, cwd, client)
+    const external = flags.has('external')
+    if (external && getOptionalStringFlag(flags, 'from')) {
+      throw new RuntimeClientError(
+        'invalid_argument',
+        'Choose either --from or --external, not both.'
+      )
+    }
+    if (external) {
+      await client.requireExternalCoordinatorCapability()
+    }
+    const from = external ? undefined : await resolveCoordinatorTerminalHandle(flags, cwd, client)
     const result = await callMutation<{
       run: { id: string; objective: string; consumer_generation: number }
     }>(client, flags, 'orchestration.runCreate', {
       objective: getRequiredStringFlag(flags, 'objective'),
-      from
+      ...(external ? { external: true } : { from })
     })
     printResult(result, json, (r) => `Run ${r.run.id} created and bound: ${r.run.objective}`)
   },
@@ -511,12 +521,19 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
   },
 
   'orchestration run-current': async ({ flags, client, cwd, json }) => {
-    const from = await resolveCoordinatorTerminalHandle(flags, cwd, client)
+    const external =
+      client.hasSavedEnvironment &&
+      !getOptionalStringFlag(flags, 'from') &&
+      !process.env.ORCA_TERMINAL_HANDLE
+    if (external) {
+      await client.requireExternalCoordinatorCapability()
+    }
+    const from = external ? undefined : await resolveCoordinatorTerminalHandle(flags, cwd, client)
     const result = await client.call<{
       run: { id: string; objective: string } | null
-    }>('orchestration.runCurrent', { from })
+    }>('orchestration.runCurrent', from ? { from } : {})
     printResult(result, json, (r) =>
-      r.run ? `${r.run.id} ${r.run.objective}` : 'No Run is bound to this terminal.'
+      r.run ? `${r.run.id} ${r.run.objective}` : 'No Run is bound to this coordinator.'
     )
   },
 
@@ -647,7 +664,14 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
     }
     const timeoutMs = getOptionalPositiveIntegerValueFlag(flags, 'timeout-ms')
     const explicitTerminal = getOptionalStringFlag(flags, 'terminal')
-    const terminal = await resolveOrchestrationTerminalHandle(flags, cwd, client, 'terminal')
+    const external =
+      client.hasSavedEnvironment && !explicitTerminal && !process.env.ORCA_TERMINAL_HANDLE
+    if (external) {
+      await client.requireExternalCoordinatorCapability()
+    }
+    const terminal = external
+      ? undefined
+      : await resolveOrchestrationTerminalHandle(flags, cwd, client, 'terminal')
 
     // Why: Claude Code auto-backgrounds subprocesses silent ~2 min; emit JSON keepalives to stderr (stdout stays one payload). See §3.4.
     const stopKeepalive = wait ? startCheckKeepalive(timeoutMs) : null
@@ -711,13 +735,14 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
         }
       }
     }
+    const checkedIdentity = terminal ?? `run:${result.result.runId ?? 'external'}`
     result = {
       ...result,
-      result: prepareOrchestrationCheckOutput(result.result, terminal, flags.has('format'))
+      result: prepareOrchestrationCheckOutput(result.result, checkedIdentity, flags.has('format'))
     }
-    printResult(result, json, (r) => formatOrchestrationCheckText(r, terminal))
+    printResult(result, json, (r) => formatOrchestrationCheckText(r, checkedIdentity))
     const compatibilityAck = result.result.legacyCompatibility?.ackMessageIds
-    if (compatibilityAck && compatibilityAck.length > 0) {
+    if (compatibilityAck && compatibilityAck.length > 0 && terminal) {
       await flushStdout()
       await client.call('orchestration.check', {
         terminal,
@@ -733,7 +758,16 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
   },
 
   'orchestration reply': async ({ flags, client, cwd, json }) => {
-    const from = await resolveOrchestrationTerminalHandle(flags, cwd, client, 'from')
+    const external =
+      client.hasSavedEnvironment &&
+      !getOptionalStringFlag(flags, 'from') &&
+      !process.env.ORCA_TERMINAL_HANDLE
+    if (external) {
+      await client.requireExternalCoordinatorCapability()
+    }
+    const from = external
+      ? undefined
+      : await resolveOrchestrationTerminalHandle(flags, cwd, client, 'from')
     const result = await callMutation<{ message: { id: string } }>(
       client,
       flags,
@@ -742,7 +776,7 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
         id: getRequiredStringFlag(flags, 'id'),
         body: getRequiredStringFlag(flags, 'body'),
         run: getOptionalStringFlag(flags, 'run'),
-        from
+        ...(from ? { from } : {})
       }
     )
     printResult(result, json, (r) => `Replied ${r.message.id}`)

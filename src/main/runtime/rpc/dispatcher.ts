@@ -25,6 +25,11 @@ import { recordRuntimeFeatureInteraction } from './runtime-feature-interaction'
 import { OrchestrationLegacyCompatibility } from './orchestration-legacy-compatibility'
 import type { RpcDispatchStreamingOptions } from './dispatcher-stream-options'
 import { invalidArgumentResponse, mapDispatcherError } from './dispatcher-error-response'
+import {
+  createExternalCoordinatorInvocation,
+  rejectUnauthenticatedExternalCoordinator
+} from './external-coordinator-invocation'
+import { createDispatcherMethodContext } from './dispatcher-method-context'
 
 export type DispatcherOptions = { runtime: OrcaRuntimeService; methods?: readonly RpcAnyMethod[] }
 
@@ -97,25 +102,20 @@ export class RpcDispatcher {
         (needsLocalCallerFingerprint(request, effectiveParams)
           ? this.orchestrationMutations.getLocalAuthenticatedCallerFingerprint()
           : undefined)
-      const invoke = (mutation?: DurableMutationInvocation) => {
-        const legacyCoordinatorRunId = legacyCoordinator?.revalidate()
-        return method.handler(effectiveParams, {
-          runtime: this.runtime,
-          signal: options?.signal,
-          requestId: request.id,
-          orchestrationCapability: request.orchestrationCapability,
-          authenticatedCallerFingerprint:
-            mutation?.identity.callerFingerprint ?? authenticatedCallerFingerprint,
-          recordMutationReceipt: mutation?.recordReceipt,
-          orchestrationMutation: mutation?.identity,
-          legacyCoordinatorRunId,
-          legacyCoordinatorAuthority: legacyCoordinator?.authority,
-          revalidateLegacyCoordinator: legacyCoordinator?.revalidate,
-          orchestrationCompatibilityCallerAuthority:
-            compatibility.orchestrationCompatibilityCallerAuthority,
-          orchestrationCompatibilityEvidence: request.orchestrationCompatibilityEvidence
-        })
-      }
+      rejectUnauthenticatedExternalCoordinator(this.runtime, request.method, effectiveParams)
+      const invoke = (mutation?: DurableMutationInvocation) =>
+        method.handler(
+          effectiveParams,
+          createDispatcherMethodContext({
+            runtime: this.runtime,
+            request,
+            options,
+            mutation,
+            authenticatedCallerFingerprint,
+            legacyCoordinator,
+            compatibilityCallerAuthority: compatibility.orchestrationCompatibilityCallerAuthority
+          })
+        )
       const result = await this.orchestrationMutations.run(
         request,
         effectiveParams,
@@ -190,38 +190,42 @@ export class RpcDispatcher {
           (needsLocalCallerFingerprint(request, effectiveParams)
             ? this.orchestrationMutations.getLocalAuthenticatedCallerFingerprint()
             : undefined)
-        const invoke = (mutation?: DurableMutationInvocation) => {
-          const legacyCoordinatorRunId = legacyCoordinator?.revalidate()
-          return method.handler(effectiveParams, {
-            runtime: this.runtime,
-            signal: options?.signal,
-            requestId: request.id,
-            connectionId: options?.connectionId,
-            clientId: options?.clientId,
-            pairedDeviceId: options?.pairedDeviceId,
-            clientKind: options?.clientKind,
-            clientCapabilities: options?.clientCapabilities,
-            orchestrationCapability: request.orchestrationCapability,
-            authenticatedCallerFingerprint:
-              mutation?.identity.callerFingerprint ?? authenticatedCallerFingerprint,
-            recordMutationReceipt: mutation?.recordReceipt,
-            orchestrationMutation: mutation?.identity,
-            pairing: options?.pairing,
-            sendBinary: options?.sendBinary,
-            registerBinaryStreamHandler: options?.registerBinaryStreamHandler,
-            legacyCoordinatorRunId,
-            legacyCoordinatorAuthority: legacyCoordinator?.authority,
-            revalidateLegacyCoordinator: legacyCoordinator?.revalidate,
-            orchestrationCompatibilityCallerAuthority:
-              compatibility.orchestrationCompatibilityCallerAuthority,
-            orchestrationCompatibilityEvidence: request.orchestrationCompatibilityEvidence
-          })
-        }
+        const externalCoordinator = createExternalCoordinatorInvocation({
+          runtime: this.runtime,
+          method: request.method,
+          params: effectiveParams,
+          clientKind: options?.clientKind,
+          clientCapabilities: options?.clientCapabilities,
+          authenticatedCallerFingerprint,
+          attestedTerminalHandle:
+            compatibility.orchestrationCompatibilityCallerAuthority?.terminalHandle ??
+            (request.orchestrationCompatibilityEvidence
+              ? this.runtime.verifyOrchestrationCompatibilityCaller(
+                  request.orchestrationCompatibilityEvidence
+                )?.terminalHandle
+              : undefined)
+        })
+        const invoke = (mutation?: DurableMutationInvocation) =>
+          method.handler(
+            effectiveParams,
+            createDispatcherMethodContext({
+              runtime: this.runtime,
+              request,
+              options,
+              mutation,
+              authenticatedCallerFingerprint,
+              legacyCoordinator,
+              compatibilityCallerAuthority: compatibility.orchestrationCompatibilityCallerAuthority,
+              externalCoordinator
+            })
+          )
         const result = await this.orchestrationMutations.run(
           request,
           effectiveParams,
           invoke,
-          legacyCoordinator?.mutationCallerFingerprint ?? authenticatedCallerFingerprint
+          externalCoordinator?.mutationCallerFingerprint ??
+            legacyCoordinator?.mutationCallerFingerprint ??
+            authenticatedCallerFingerprint
         )
         recordRuntimeFeatureInteraction(
           this.runtime,

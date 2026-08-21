@@ -14,7 +14,8 @@ import { RuntimeClientError, RuntimeRpcFailureError, type RuntimeRpcSuccess } fr
 import { markEnvironmentUsed, resolveEnvironmentPairingOffer } from './environments'
 import {
   ORCHESTRATION_CONTRACT_RUNTIME_CAPABILITY,
-  ORCHESTRATION_CONTRACT_VERSION
+  ORCHESTRATION_CONTRACT_VERSION,
+  ORCHESTRATION_EXTERNAL_COORDINATOR_RUNTIME_CAPABILITY
 } from '../../shared/protocol-version'
 import { RemoteRuntimeCompatGate } from './remote-runtime-compat-gate'
 import { createOrchestrationCompatibilityEnvelope } from './orchestration-compatibility-envelope'
@@ -64,6 +65,28 @@ export class RuntimeClient {
 
   get isRemote(): boolean {
     return this.remotePairing !== null
+  }
+
+  get hasSavedEnvironment(): boolean {
+    return this.environmentSelector !== null
+  }
+
+  async requireExternalCoordinatorCapability(): Promise<void> {
+    if (!this.remotePairing || !this.environmentSelector) {
+      throw new RuntimeClientError(
+        'external_coordinator_requires_environment',
+        'External orchestration requires a saved runtime environment selected with --environment.'
+      )
+    }
+    const response = await this.call<RuntimeStatus>('status.get')
+    if (
+      !response.result.capabilities?.includes(ORCHESTRATION_EXTERNAL_COORDINATOR_RUNTIME_CAPABILITY)
+    ) {
+      throw new RuntimeClientError(
+        'external_coordinator_unsupported',
+        'The selected Orca runtime does not support external coordinator identity.'
+      )
+    }
   }
 
   async call<TResult>(

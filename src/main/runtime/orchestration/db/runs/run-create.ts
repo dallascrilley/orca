@@ -33,12 +33,38 @@ export function createRun(
   return this.getRun(id) as RunRow
 }
 
+export function createExternalRun(
+  this: OrchestrationDb,
+  params: { objective: string; clientFingerprint: string }
+): RunRow {
+  const id = generateId('run')
+  this.db.exec('BEGIN IMMEDIATE')
+  try {
+    this.unbindOtherRunsForExternalCoordinator(params.clientFingerprint)
+    this.db
+      .prepare(
+        `INSERT INTO runs (
+           id, objective, coordinator_client_fingerprint,
+           consumer_generation, legacy
+         ) VALUES (?, ?, ?, 1, 0)`
+      )
+      .run(id, params.objective, params.clientFingerprint)
+    this.db.exec('COMMIT')
+  } catch (error) {
+    this.db.exec('ROLLBACK')
+    throw error
+  }
+  return this.getRun(id) as RunRow
+}
+
 export type RunCreateMethods = {
   createRun: typeof createRun
+  createExternalRun: typeof createExternalRun
 }
 
 export function attachRunCreate(ctor: { prototype: object }): void {
   Object.assign(ctor.prototype, {
-    createRun
+    createRun,
+    createExternalRun
   })
 }

@@ -7,10 +7,11 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
     path: ['orchestration', 'run-create'],
     summary: 'Create and bind a lightweight orchestration Run',
     usage:
-      'orca orchestration run-create --objective <text> [--from <handle>] [--retry-request <id>] [--json]',
-    allowedFlags: [...GLOBAL_FLAGS, 'objective', 'from', 'retry-request'],
+      'orca orchestration run-create --objective <text> [--from <handle> | --external --environment <saved-environment>] [--retry-request <id>] [--json]',
+    allowedFlags: [...GLOBAL_FLAGS, 'objective', 'from', 'external', 'retry-request'],
     notes: [
       'A Run is a namespace and home inbox. It never schedules or places workers.',
+      '--external binds the Run to the authenticated saved runtime environment instead of a terminal.',
       '--retry-request is only for exact recovery after an unknown mutation result.'
     ]
   },

@@ -901,6 +901,7 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
     handler: async (
       params,
       {
+        externalCoordinatorAuthority,
         orchestrationCompatibilityEvidence,
         runtime,
         signal,
@@ -910,7 +911,11 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
       }
     ) => {
       const db = runtime.getOrchestrationDb()
-      const handle = params.terminal ?? 'unknown'
+      const externalRun =
+        externalCoordinatorAuthority?.kind === 'bound'
+          ? externalCoordinatorAuthority.revalidate()
+          : undefined
+      const handle = externalRun ? `run:${externalRun.id}` : (params.terminal ?? 'unknown')
       const typeFilter = parseMessageTypes(params.types)
       const routeDirectSnapshot = async (
         runId: string,
@@ -924,38 +929,47 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
       }
 
       // Why: a live runtime handle is authoritative; pane metadata is only the restart fallback.
-      const paneKey = runtime.getTerminalPaneKey(handle) ?? params.terminalPaneKey
+      const paneKey = externalRun
+        ? undefined
+        : (runtime.getTerminalPaneKey(handle) ?? params.terminalPaneKey)
       const boundRun = paneKey ? db.getCurrentRunForPane(paneKey) : undefined
-      if (params.run || boundRun) {
-        const run = resolveRunScope(runtime, {
-          runId: params.run,
-          callerTerminalHandle: handle,
-          callerPaneKey: paneKey ?? undefined,
-          requireCurrentConsumer: true,
-          legacyCoordinatorRunId,
-          callerEvidence: orchestrationCompatibilityEvidence
-        })
+      if (externalRun || params.run || boundRun) {
+        const run =
+          externalRun ??
+          resolveRunScope(runtime, {
+            runId: params.run,
+            callerTerminalHandle: handle,
+            callerPaneKey: paneKey ?? undefined,
+            requireCurrentConsumer: true,
+            legacyCoordinatorRunId,
+            callerEvidence: orchestrationCompatibilityEvidence
+          })
         const generation = run.consumer_generation
         const address = `run:${run.id}`
         runtime.ensureOrchestrationFederationRelay(run.id)
-        await routeDirectSnapshot(run.id, handle, (throughSequence) =>
-          db.routeUnreadDirectMessagesToRunMailbox(run.id, handle, throughSequence)
-        )
-        const coordinatorHandle = run.coordinator_handle
-        if (coordinatorHandle && coordinatorHandle !== handle) {
-          await routeDirectSnapshot(run.id, coordinatorHandle, (throughSequence) =>
-            db.routeUnreadDirectMessagesToRunMailbox(run.id, coordinatorHandle, throughSequence)
+        if (!externalRun) {
+          await routeDirectSnapshot(run.id, handle, (throughSequence) =>
+            db.routeUnreadDirectMessagesToRunMailbox(run.id, handle, throughSequence)
           )
+          const coordinatorHandle = run.coordinator_handle
+          if (coordinatorHandle && coordinatorHandle !== handle) {
+            await routeDirectSnapshot(run.id, coordinatorHandle, (throughSequence) =>
+              db.routeUnreadDirectMessagesToRunMailbox(run.id, coordinatorHandle, throughSequence)
+            )
+          }
         }
         revalidateLegacyCoordinator?.()
-        const currentRun = resolveRunScope(runtime, {
-          runId: run.id,
-          callerTerminalHandle: handle,
-          callerPaneKey: paneKey ?? undefined,
-          requireCurrentConsumer: true,
-          legacyCoordinatorRunId,
-          callerEvidence: orchestrationCompatibilityEvidence
-        })
+        const currentRun =
+          externalCoordinatorAuthority?.kind === 'bound'
+            ? externalCoordinatorAuthority.revalidate()
+            : resolveRunScope(runtime, {
+                runId: run.id,
+                callerTerminalHandle: handle,
+                callerPaneKey: paneKey ?? undefined,
+                requireCurrentConsumer: true,
+                legacyCoordinatorRunId,
+                callerEvidence: orchestrationCompatibilityEvidence
+              })
         if (currentRun.consumer_generation !== generation) {
           throw new OrchestrationError(
             'consumer_fenced',
@@ -1054,6 +1068,9 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
         })
         try {
           revalidateLegacyCoordinator?.()
+          if (externalCoordinatorAuthority?.kind === 'bound') {
+            externalCoordinatorAuthority.revalidate()
+          }
         } catch (error) {
           if (!acknowledged) {
             throw error
@@ -1374,7 +1391,12 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
     params: ReplyParams,
     handler: async (
       params,
-      { orchestrationCompatibilityEvidence, runtime, legacyCoordinatorRunId }
+      {
+        externalCoordinatorAuthority,
+        orchestrationCompatibilityEvidence,
+        runtime,
+        legacyCoordinatorRunId
+      }
     ) => {
       const db = runtime.getOrchestrationDb()
       const original = db.getMessageById(params.id)
@@ -1404,15 +1426,26 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
         )
       }
 
+      const run =
+        externalCoordinatorAuthority?.kind === 'bound'
+          ? externalCoordinatorAuthority.revalidate()
+          : resolveRunScope(runtime, {
+              runId: params.run ?? original.run_id,
+              callerTerminalHandle: params.from,
+              requireCurrentConsumer: true,
+              legacyCoordinatorRunId,
+              callerEvidence: orchestrationCompatibilityEvidence
+            })
+      if (run.id !== original.run_id || (params.run !== undefined && params.run !== run.id)) {
+        throw new OrchestrationError(
+          'consumer_fenced',
+          `This coordinator is not bound to the message Run ${original.run_id}.`,
+          { effectsApplied: false }
+        )
+      }
+
       const question = db.getQuestion(params.id)
       if (question) {
-        const run = resolveRunScope(runtime, {
-          runId: params.run ?? question.run_id,
-          callerTerminalHandle: params.from,
-          requireCurrentConsumer: true,
-          legacyCoordinatorRunId,
-          callerEvidence: orchestrationCompatibilityEvidence
-        })
         const answered = db.answerQuestion({
           messageId: question.message_id,
           runId: run.id,
@@ -1442,6 +1475,9 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
         }
       }
 
+      if (externalCoordinatorAuthority?.kind === 'bound') {
+        externalCoordinatorAuthority.revalidate()
+      }
       db.markAsRead([original.id])
 
       const reply = db.insertMessage({

@@ -99,6 +99,20 @@ export function getCurrentRunForPane(this: OrchestrationDb, paneKey: string): Ru
   return run ? exposeRunTimestamps(run) : undefined
 }
 
+export function getCurrentRunForExternalCoordinator(
+  this: OrchestrationDb,
+  clientFingerprint: string
+): RunRow | undefined {
+  const run = this.db
+    .prepare(
+      `SELECT * FROM runs
+       WHERE coordinator_client_fingerprint = ? AND legacy = 0
+       LIMIT 1`
+    )
+    .get(clientFingerprint) as RunRow | undefined
+  return run ? exposeRunTimestamps(run) : undefined
+}
+
 // Why: the indexed suffix only narrows candidates; isEquivalentPaneKey still decides, so
 // reminted tab halves keep matching and unparseable keys keep requiring an exact match.
 export function runsBoundToPane(this: OrchestrationDb, paneKey: string): RunRow[] {
@@ -145,6 +159,34 @@ export function unbindOtherRunsForPane(
   }
 }
 
+export function unbindOtherRunsForExternalCoordinator(
+  this: OrchestrationDb,
+  clientFingerprint: string,
+  exceptRunId?: string
+): void {
+  const runs = this.db
+    .prepare(
+      `SELECT * FROM runs
+       WHERE coordinator_client_fingerprint = ? AND legacy = 0`
+    )
+    .all(clientFingerprint) as RunRow[]
+  for (const run of runs) {
+    if (run.id === exceptRunId) {
+      continue
+    }
+    this.db
+      .prepare(
+        `UPDATE runs
+         SET coordinator_client_fingerprint = NULL,
+             consumer_generation = consumer_generation + 1,
+             updated_at = datetime('now')
+         WHERE id = ?`
+      )
+      .run(run.id)
+    this.fenceOutstandingDelivery(run.id)
+  }
+}
+
 export function requireRun(this: OrchestrationDb, runId: string): void {
   if (!this.getRunRaw(runId)) {
     throw new Error(`Run not found: ${runId}`)
@@ -163,9 +205,11 @@ export type RunLookupMethods = {
   getRunMailboxOwnerIdsForHandle: typeof getRunMailboxOwnerIdsForHandle
   listRuns: typeof listRuns
   getCurrentRunForPane: typeof getCurrentRunForPane
+  getCurrentRunForExternalCoordinator: typeof getCurrentRunForExternalCoordinator
   runsBoundToPane: typeof runsBoundToPane
   getRunRaw: typeof getRunRaw
   unbindOtherRunsForPane: typeof unbindOtherRunsForPane
+  unbindOtherRunsForExternalCoordinator: typeof unbindOtherRunsForExternalCoordinator
   requireRun: typeof requireRun
   fenceOutstandingDelivery: typeof fenceOutstandingDelivery
 }
@@ -177,9 +221,11 @@ export function attachRunLookup(ctor: { prototype: object }): void {
     getRunMailboxOwnerIdsForHandle,
     listRuns,
     getCurrentRunForPane,
+    getCurrentRunForExternalCoordinator,
     runsBoundToPane,
     getRunRaw,
     unbindOtherRunsForPane,
+    unbindOtherRunsForExternalCoordinator,
     requireRun,
     fenceOutstandingDelivery
   })
