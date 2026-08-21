@@ -215,6 +215,7 @@ import type {
   SkillUploadChunkRequest
 } from '../../shared/skill-upload-session-contract'
 import { SkillUploadSessionService } from '../skills/skill-upload-session-service'
+import { SKILL_UPLOAD_STAGING_ROOT_NAME } from '../skills/skill-upload-staging-ownership'
 import type { SkillSshWorkspaceAuthority } from '../../shared/skill-ssh-relay-contract'
 import {
   installSkillBundleOnSshHost,
@@ -612,6 +613,7 @@ import {
   resolveCustomWorktreeVisibilitySources,
   type WorktreeVisibilitySourceMatcher
 } from '../../shared/worktree/visibility-sources'
+import { resolveConfiguredWorktreeBasePaths } from '../../shared/worktree/configured-worktree-base-path'
 import {
   BROWSER_HEADLESS_RUNTIME_CAPABILITY,
   BROWSER_CERTIFICATE_TRUST_RUNTIME_CAPABILITY,
@@ -905,6 +907,7 @@ import {
   sanitizeLinearErrorMessage
 } from '../linear/issue-context-errors'
 import { listMcpIssues } from '../linear/mcp-issue-list'
+import { linearPriorityLabel } from '../../shared/linear/priority-label'
 import { writeIssueRelation } from '../linear/issue-relation-write'
 import {
   createProject as createLinearProject,
@@ -3660,6 +3663,7 @@ export class OrcaRuntimeService {
   private skillCloudService: SkillCloudService | null = null
   private agentSkillShareInProgress = false
   private skillUploadSessions: SkillUploadSessionService | null = null
+  private skillUploadSessionsDisposed = false
   private readonly skillTransactionRecovery: Promise<unknown>
   private readonly skillInstallOperations = new Map<string, AbortController>()
   private readonly skillInstallProgress = new Map<string, SkillBundleInstallProgress>()
@@ -5695,10 +5699,20 @@ export class OrcaRuntimeService {
   }
 
   private requireSkillUploadSessions(): SkillUploadSessionService {
+    if (this.skillUploadSessionsDisposed) {
+      throw new Error('skill-upload-service-disposed')
+    }
     this.skillUploadSessions ??= new SkillUploadSessionService(
-      join(app.getPath('userData'), 'skill-installs', 'remote-uploads')
+      join(app.getPath('userData'), 'skill-installs', SKILL_UPLOAD_STAGING_ROOT_NAME)
     )
     return this.skillUploadSessions
+  }
+
+  async disposeSkillUploadSessions(): Promise<void> {
+    this.skillUploadSessionsDisposed = true
+    const sessions = this.skillUploadSessions
+    this.skillUploadSessions = null
+    await sessions?.dispose()
   }
 
   getRuntimeId(): string {
@@ -23325,7 +23339,8 @@ export class OrcaRuntimeService {
       const repoOwnerCount = store.getRepos().filter((candidate) => candidate.id === repo.id).length
       const matcher = createWorktreeVisibilitySourceMatcher(
         [repo.path, ...worktrees.map((worktree) => worktree.path)],
-        resolveCustomWorktreeVisibilitySources(repo, visibilityDefaults)
+        resolveCustomWorktreeVisibilitySources(repo, visibilityDefaults),
+        resolveConfiguredWorktreeBasePaths(repo)
       )
       const detected = worktrees.map((worktree) =>
         this.toRuntimeDetectedWorktree(
@@ -23354,7 +23369,8 @@ export class OrcaRuntimeService {
     }
     const worktreeVisibilitySourceMatcher = createWorktreeVisibilitySourceMatcher(
       [repo.path, ...scan.worktrees.map((worktree) => worktree.path)],
-      resolveCustomWorktreeVisibilitySources(repo, visibilityDefaults)
+      resolveCustomWorktreeVisibilitySources(repo, visibilityDefaults),
+      resolveConfiguredWorktreeBasePaths(repo)
     )
     const expectedHostId = getRepoExecutionHostId(repo)
     const repoOwnerCount = store.getRepos().filter((candidate) => candidate.id === repo.id).length
@@ -23466,7 +23482,8 @@ export class OrcaRuntimeService {
           repo.id,
           createWorktreeVisibilitySourceMatcher(
             [repo.path, ...(checkoutPathsByRepoId.get(repo.id) ?? [])],
-            resolveCustomWorktreeVisibilitySources(repo, visibilityDefaults)
+            resolveCustomWorktreeVisibilitySources(repo, visibilityDefaults),
+            resolveConfiguredWorktreeBasePaths(repo)
           )
         ])
     )
@@ -35831,14 +35848,16 @@ export class OrcaRuntimeService {
         code: this.linearWorkspaceErrorCode(error.type),
         message: sanitizeLinearErrorMessage(error.message)
       }))
+      const hasMore = result.hasMore === true || result.items.length > limit
       return {
         projects,
+        truncated: hasMore,
         meta: {
           query: params.query,
           workspaceId: params.workspaceId,
           limit,
           returned: projects.length,
-          hasMore: result.hasMore === true || result.items.length > limit,
+          hasMore,
           partial: workspaceErrors.length > 0,
           workspaceErrors
         }
@@ -35878,11 +35897,13 @@ export class OrcaRuntimeService {
           estimate: issue.estimate,
           dueDate: issue.dueDate,
           updatedAt: issue.updatedAt,
+          priorityLabel: linearPriorityLabel(issue.priority),
           workspace: {
             id: issue.workspaceId ?? workspaceId ?? '',
             name: issue.workspaceName ?? issue.workspaceId ?? workspaceId ?? ''
           }
         })),
+        truncated: result.hasMore === true,
         meta: {
           filter,
           workspaceId,
