@@ -13,6 +13,7 @@ import {
   waitFor,
   seedSupervisedAskWorkers
 } from './runtime-rpc-test-harness'
+import { evidence } from './rpc/orchestration-legacy-compatibility-dispatcher-test-fixture'
 
 vi.mock('../git/worktree', () => {
   const worktrees = [
@@ -35,12 +36,27 @@ class FakeWebSocket extends EventEmitter {
   readyState = this.OPEN
 }
 
+const compatibilityEvidence = (terminalHandle: string) => ({
+  ...evidence('coordinator'),
+  terminalHandle,
+  paneKey: `tab_test:${terminalHandle}`
+})
+
 describe('OrcaRuntimeRpcServer', () => {
   it('caps WebSocket long-polls and aborts them when the socket closes', async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
     const runtime = new OrcaRuntimeService()
     const db = new OrchestrationDb(':memory:')
     runtime.setOrchestrationDb(db)
+    vi.spyOn(runtime, 'verifyOrchestrationCompatibilityCaller').mockImplementation((proof) => {
+      if (!proof) {
+        return null
+      }
+      return {
+        terminalHandle: proof.terminalHandle,
+        paneKey: proof.paneKey
+      } as never
+    })
     const server = new OrcaRuntimeRpcServer({
       runtime,
       userDataPath,
@@ -64,7 +80,8 @@ describe('OrcaRuntimeRpcServer', () => {
             id: 'req_wait',
             method: 'orchestration.check',
             deviceToken: entry.token,
-            params: { terminal: 'term_wait', wait: true, timeoutMs: 10_000 }
+            params: { terminal: 'term_wait', wait: true, timeoutMs: 10_000 },
+            orchestrationCompatibilityEvidence: compatibilityEvidence('term_wait')
           })
         ),
         (response) => replies.push(JSON.parse(response) as Record<string, unknown>),
@@ -81,7 +98,8 @@ describe('OrcaRuntimeRpcServer', () => {
             id: 'req_busy',
             method: 'orchestration.check',
             deviceToken: entry.token,
-            params: { terminal: 'term_busy', wait: true, timeoutMs: 10_000 }
+            params: { terminal: 'term_busy', wait: true, timeoutMs: 10_000 },
+            orchestrationCompatibilityEvidence: compatibilityEvidence('term_busy')
           })
         ),
         (response) => replies.push(JSON.parse(response) as Record<string, unknown>),
@@ -116,6 +134,15 @@ describe('OrcaRuntimeRpcServer', () => {
     const runtime = new OrcaRuntimeService()
     const db = new OrchestrationDb(':memory:')
     runtime.setOrchestrationDb(db)
+    vi.spyOn(runtime, 'verifyOrchestrationCompatibilityCaller').mockImplementation((proof) => {
+      if (!proof) {
+        return null
+      }
+      return {
+        terminalHandle: proof.terminalHandle,
+        paneKey: proof.paneKey
+      } as never
+    })
     seedSupervisedAskWorkers(db, ['term_w0', 'term_w1', 'term_w2'])
     // Why: cap 4 → ask sub-cap 2, so the third ask must be shed while waits keep the other half.
     const server = new OrcaRuntimeRpcServer({
@@ -135,16 +162,29 @@ describe('OrcaRuntimeRpcServer', () => {
     const push = (response: string): void => {
       replies.push(JSON.parse(response) as Record<string, unknown>)
     }
-    const dispatch = (id: string, method: string, params: unknown): Promise<void> =>
-      server['handleWebSocketMessage'](
+    const dispatch = (
+      id: string,
+      method: string,
+      params: Record<string, unknown>
+    ): Promise<void> => {
+      const terminalHandle =
+        typeof params.from === 'string' ? params.from : (params.terminal as string)
+      return server['handleWebSocketMessage'](
         JSON.stringify(
-          withCurrentOrchestrationContract({ id, method, deviceToken: entry.token, params })
+          withCurrentOrchestrationContract({
+            id,
+            method,
+            deviceToken: entry.token,
+            params,
+            orchestrationCompatibilityEvidence: compatibilityEvidence(terminalHandle)
+          })
         ),
         push,
         () => {},
         undefined,
         ws as unknown as WebSocket
       )
+    }
 
     try {
       const asks = [0, 1].map((i) =>

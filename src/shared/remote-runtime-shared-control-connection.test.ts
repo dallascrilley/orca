@@ -64,6 +64,7 @@ describe('RemoteRuntimeSharedControlConnection', () => {
       clientCapabilities: [
         protocolVersion.SESSION_TAB_CLOSE_INTENT_RUNTIME_CAPABILITY,
         protocolVersion.AGENT_SESSION_BOUNDARY_RUNTIME_CAPABILITY,
+        protocolVersion.ORCHESTRATION_EXTERNAL_COORDINATOR_RUNTIME_CAPABILITY,
         protocolVersion.SKILL_INSTALL_RESULT_V2_CAPABILITY,
         protocolVersion.WORKTREE_VISIBILITY_DEFAULTS_RUNTIME_CAPABILITY,
         protocolVersion.WORKTREE_VISIBILITY_SOURCE_DEFAULTS_RUNTIME_CAPABILITY
